@@ -10,4 +10,3 @@ python-jose==3.3.0
 python-multipart==0.0.9
 pydantic==2.5.0
 email-validator==2.1.0
-python-3.11.4
