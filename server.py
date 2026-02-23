@@ -646,6 +646,22 @@ async def mark_all_read(current_user: dict = Depends(get_current_user)):
 
 # =====================================================
 # APIs البريد الإلكتروني الداخلي
+@api_router.get("/emails/stats/unread")
+async def get_email_stats(current_user: dict = Depends(get_current_user)):
+    unread = await execute_query(
+        """SELECT COUNT(*) as count FROM email_recipients er
+           JOIN emails e ON e.id = er.email_id
+           WHERE er.recipient_id = %s AND er.is_read = FALSE AND er.is_deleted = FALSE AND e.is_sent = TRUE""",
+        (current_user["id"],),
+        fetch_one=True
+    )
+    drafts = await execute_query(
+        "SELECT COUNT(*) as count FROM emails WHERE sender_id = %s AND is_sent = FALSE",
+        (current_user["id"],),
+        fetch_one=True
+    )
+    return {"unread": unread["count"] if unread else 0, "drafts": drafts["count"] if drafts else 0}
+
 # =====================================================
 @api_router.get("/emails/inbox")
 async def get_inbox(current_user: dict = Depends(get_current_user)):
@@ -890,33 +906,6 @@ async def get_dashboard_stats(current_user: dict = Depends(get_current_user)):
 # =====================================================
 # تضمين الراوتر والـ Health Check
 # =====================================================
-app.include_router(api_router)
-
-@app.get("/api/health")
-async def health_check():
-    try:
-        pool = await get_db_pool()
-        async with pool.acquire() as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute("SELECT 1")
-        db_status = "connected"
-    except Exception as e:
-        db_status = f"error: {str(e)}"
-    
-    return {
-        "status": "healthy" if db_status == "connected" else "unhealthy",
-        "database": db_status,
-        "version": "2.0.0",
-        "app": "Al-Khayat Law Firm Management System (MySQL)"
-    }
-
-@app.on_event("startup")
-async def startup():
-    try:
-        await get_db_pool()
-        print("✅ Connected to MySQL database")
-    except Exception as e:
-        print(f"❌ Failed to connect to MySQL: {e}")
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -1192,3 +1181,30 @@ async def test_email_connection(current_user: dict = Depends(get_current_user)):
     except Exception as e:
         results["errors"].append(f"SMTP: {str(e)}")
     return results
+app.include_router(api_router)
+
+@app.get("/api/health")
+async def health_check():
+    try:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("SELECT 1")
+        db_status = "connected"
+    except Exception as e:
+        db_status = f"error: {str(e)}"
+    
+    return {
+        "status": "healthy" if db_status == "connected" else "unhealthy",
+        "database": db_status,
+        "version": "2.0.0",
+        "app": "Al-Khayat Law Firm Management System (MySQL)"
+    }
+
+@app.on_event("startup")
+async def startup():
+    try:
+        await get_db_pool()
+        print("✅ Connected to MySQL database")
+    except Exception as e:
+        print(f"❌ Failed to connect to MySQL: {e}")
