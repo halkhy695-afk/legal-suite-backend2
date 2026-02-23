@@ -163,7 +163,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
+async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="بيانات الاعتماد غير صالحة",
@@ -178,14 +178,18 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
         raise credentials_exception
     
     user = await execute_query(
-        "SELECT * FROM users WHERE id = %s AND is_active = TRUE",
+        "SELECT * FROM users WHERE id = %s AND is_active = 1",
         (user_id,),
         fetch_one=True
     )
     if user is None:
         raise credentials_exception
     
-    return User(**user)
+    # Convert to dict and fix boolean fields
+    user_dict = dict(user)
+    user_dict['is_active'] = bool(user_dict.get('is_active', 1))
+    user_dict['first_login'] = bool(user_dict.get('first_login', 1))
+    return user_dict
 
 def generate_id():
     return str(uuid.uuid4())
@@ -256,10 +260,10 @@ async def register(user: UserCreate):
     return {"message": "تم إنشاء الحساب بنجاح", "user_id": user_id}
 
 @api_router.post("/auth/change-password")
-async def change_password(data: PasswordChange, current_user: User = Depends(get_current_user)):
+async def change_password(data: PasswordChange, current_user: dict = Depends(get_current_user)):
     user = await execute_query(
         "SELECT hashed_password FROM users WHERE id = %s",
-        (current_user.id,),
+        (current_user["id"],),
         fetch_one=True
     )
     
@@ -268,14 +272,14 @@ async def change_password(data: PasswordChange, current_user: User = Depends(get
     
     new_hashed = get_password_hash(data.new_password)
     await execute_query(
-        "UPDATE users SET hashed_password = %s, first_login = FALSE WHERE id = %s",
-        (new_hashed, current_user.id)
+        "UPDATE users SET hashed_password = %s, first_login = 0 WHERE id = %s",
+        (new_hashed, current_user["id"])
     )
     
     return {"message": "تم تغيير كلمة المرور بنجاح"}
 
 @api_router.get("/auth/me")
-async def get_me(current_user: User = Depends(get_current_user)):
+async def get_me(current_user: dict = Depends(get_current_user)):
     return current_user
 
 # =====================================================
@@ -284,7 +288,7 @@ async def get_me(current_user: User = Depends(get_current_user)):
 @api_router.get("/employees")
 async def get_employees(
     include_admins: bool = False,
-    current_user: User = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user)
 ):
     if include_admins:
         query = "SELECT * FROM users WHERE role != 'client' ORDER BY created_at DESC"
@@ -307,8 +311,8 @@ async def get_employees(
     return result
 
 @api_router.post("/employees")
-async def create_employee(user: UserCreate, current_user: User = Depends(get_current_user)):
-    if current_user.role != "admin":
+async def create_employee(user: UserCreate, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "admin":
         raise HTTPException(status_code=403, detail="غير مصرح")
     
     existing = await execute_query(
@@ -331,8 +335,8 @@ async def create_employee(user: UserCreate, current_user: User = Depends(get_cur
     return {"message": "تم إنشاء الموظف بنجاح", "user_id": user_id}
 
 @api_router.delete("/admin/delete-user/{user_id}")
-async def delete_user(user_id: str, current_user: User = Depends(get_current_user)):
-    if current_user.role != "admin":
+async def delete_user(user_id: str, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "admin":
         raise HTTPException(status_code=403, detail="غير مصرح")
     
     await execute_query("DELETE FROM users WHERE id = %s", (user_id,))
@@ -345,7 +349,7 @@ async def delete_user(user_id: str, current_user: User = Depends(get_current_use
 async def get_client_requests(
     request_type: Optional[str] = None,
     status: Optional[str] = None,
-    current_user: User = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user)
 ):
     query = "SELECT * FROM client_requests WHERE 1=1"
     params = []
@@ -358,9 +362,9 @@ async def get_client_requests(
         query += " AND status = %s"
         params.append(status)
     
-    if current_user.role == "client":
+    if current_user["role"] == "client":
         query += " AND client_id = %s"
-        params.append(current_user.id)
+        params.append(current_user["id"])
     
     query += " ORDER BY created_at DESC"
     
@@ -368,7 +372,7 @@ async def get_client_requests(
     return requests or []
 
 @api_router.post("/client-requests")
-async def create_client_request(request: ClientRequestCreate, current_user: User = Depends(get_current_user)):
+async def create_client_request(request: ClientRequestCreate, current_user: dict = Depends(get_current_user)):
     # الحصول على رقم الطلب التالي
     last_request = await execute_query(
         "SELECT request_number FROM client_requests ORDER BY created_at DESC LIMIT 1",
@@ -391,7 +395,7 @@ async def create_client_request(request: ClientRequestCreate, current_user: User
            (id, request_number, request_type, client_id, client_name, client_phone, client_email, 
             national_id, subject, description, status, priority, referral_source, created_at)
            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'new', %s, %s, NOW())""",
-        (request_id, request_number, request.request_type, current_user.id, request.client_name,
+        (request_id, request_number, request.request_type, current_user["id"], request.client_name,
          request.client_phone, request.client_email, request.national_id, request.subject,
          request.description, request.priority, request.referral_source)
     )
@@ -402,7 +406,7 @@ async def create_client_request(request: ClientRequestCreate, current_user: User
 async def update_request_status(
     request_id: str,
     status: str = Query(...),
-    current_user: User = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user)
 ):
     await execute_query(
         "UPDATE client_requests SET status = %s, updated_at = NOW() WHERE id = %s",
@@ -411,8 +415,8 @@ async def update_request_status(
     return {"message": "تم تحديث الحالة بنجاح"}
 
 @api_router.delete("/client-requests/{request_id}")
-async def delete_client_request(request_id: str, current_user: User = Depends(get_current_user)):
-    if current_user.role != "admin":
+async def delete_client_request(request_id: str, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "admin":
         raise HTTPException(status_code=403, detail="غير مصرح")
     
     await execute_query("DELETE FROM client_requests WHERE id = %s", (request_id,))
@@ -425,7 +429,7 @@ async def delete_client_request(request_id: str, current_user: User = Depends(ge
 async def get_tasks(
     status: Optional[str] = None,
     assigned_to: Optional[str] = None,
-    current_user: User = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user)
 ):
     query = "SELECT * FROM tasks WHERE 1=1"
     params = []
@@ -437,9 +441,9 @@ async def get_tasks(
     if assigned_to:
         query += " AND assigned_to = %s"
         params.append(assigned_to)
-    elif current_user.role not in ["admin"]:
+    elif current_user["role"] not in ["admin"]:
         query += " AND assigned_to = %s"
-        params.append(current_user.id)
+        params.append(current_user["id"])
     
     query += " ORDER BY created_at DESC"
     
@@ -447,16 +451,16 @@ async def get_tasks(
     return tasks or []
 
 @api_router.get("/my-tasks")
-async def get_my_tasks(current_user: User = Depends(get_current_user)):
+async def get_my_tasks(current_user: dict = Depends(get_current_user)):
     tasks = await execute_query(
         "SELECT * FROM tasks WHERE assigned_to = %s ORDER BY created_at DESC",
-        (current_user.id,),
+        (current_user["id"],),
         fetch_all=True
     )
     return tasks or []
 
 @api_router.post("/tasks")
-async def create_task(task: TaskCreate, current_user: User = Depends(get_current_user)):
+async def create_task(task: TaskCreate, current_user: dict = Depends(get_current_user)):
     # الحصول على رقم المهمة التالي
     last_task = await execute_query(
         "SELECT task_number FROM tasks ORDER BY created_at DESC LIMIT 1",
@@ -480,7 +484,7 @@ async def create_task(task: TaskCreate, current_user: User = Depends(get_current
             assigned_to, assigned_by, case_id, request_id, due_date, created_at)
            VALUES (%s, %s, %s, %s, %s, 'pending', %s, %s, %s, %s, %s, %s, NOW())""",
         (task_id, task_number, task.title, task.description, task.task_type,
-         task.priority, task.assigned_to, current_user.id, task.case_id, task.request_id, task.due_date)
+         task.priority, task.assigned_to, current_user["id"], task.case_id, task.request_id, task.due_date)
     )
     
     # إنشاء إشعار للموظف المكلف
@@ -498,7 +502,7 @@ async def create_task(task: TaskCreate, current_user: User = Depends(get_current
 async def update_task_status(
     task_id: str,
     status: str = Query(...),
-    current_user: User = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user)
 ):
     completed_at = "NOW()" if status == "completed" else "NULL"
     
@@ -512,24 +516,24 @@ async def update_task_status(
 # APIs الحضور والانصراف
 # =====================================================
 @api_router.get("/attendance/today")
-async def get_today_attendance(current_user: User = Depends(get_current_user)):
+async def get_today_attendance(current_user: dict = Depends(get_current_user)):
     today = datetime.now().strftime("%Y-%m-%d")
     
     record = await execute_query(
         "SELECT * FROM attendance WHERE user_id = %s AND date = %s",
-        (current_user.id, today),
+        (current_user["id"], today),
         fetch_one=True
     )
     
     return record
 
 @api_router.post("/attendance/record")
-async def record_attendance(record: AttendanceRecord, current_user: User = Depends(get_current_user)):
+async def record_attendance(record: AttendanceRecord, current_user: dict = Depends(get_current_user)):
     today = datetime.now().strftime("%Y-%m-%d")
     
     existing = await execute_query(
         "SELECT * FROM attendance WHERE user_id = %s AND date = %s",
-        (current_user.id, today),
+        (current_user["id"], today),
         fetch_one=True
     )
     
@@ -551,7 +555,7 @@ async def record_attendance(record: AttendanceRecord, current_user: User = Depen
                    (id, user_id, user_name, date, clock_in_time, clock_in_location_lat, 
                     clock_in_location_lng, clock_in_address, status, created_at)
                    VALUES (%s, %s, %s, %s, NOW(), %s, %s, %s, 'present', NOW())""",
-                (att_id, current_user.id, current_user.full_name, today,
+                (att_id, current_user["id"], current_user["full_name"], today,
                  record.latitude, record.longitude, record.address)
             )
         
@@ -578,14 +582,14 @@ async def get_attendance_history(
     user_id: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    current_user: User = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user)
 ):
     query = "SELECT * FROM attendance WHERE 1=1"
     params = []
     
-    if current_user.role != "admin":
+    if current_user["role"] != "admin":
         query += " AND user_id = %s"
-        params.append(current_user.id)
+        params.append(current_user["id"])
     elif user_id:
         query += " AND user_id = %s"
         params.append(user_id)
@@ -607,36 +611,36 @@ async def get_attendance_history(
 # APIs الإشعارات
 # =====================================================
 @api_router.get("/notifications")
-async def get_notifications(current_user: User = Depends(get_current_user)):
+async def get_notifications(current_user: dict = Depends(get_current_user)):
     notifications = await execute_query(
         "SELECT * FROM notifications WHERE user_id = %s ORDER BY created_at DESC LIMIT 50",
-        (current_user.id,),
+        (current_user["id"],),
         fetch_all=True
     )
     return notifications or []
 
 @api_router.get("/notifications/unread-count")
-async def get_unread_count(current_user: User = Depends(get_current_user)):
+async def get_unread_count(current_user: dict = Depends(get_current_user)):
     result = await execute_query(
         "SELECT COUNT(*) as count FROM notifications WHERE user_id = %s AND is_read = FALSE",
-        (current_user.id,),
+        (current_user["id"],),
         fetch_one=True
     )
     return {"count": result["count"] if result else 0}
 
 @api_router.put("/notifications/{notification_id}/read")
-async def mark_notification_read(notification_id: str, current_user: User = Depends(get_current_user)):
+async def mark_notification_read(notification_id: str, current_user: dict = Depends(get_current_user)):
     await execute_query(
         "UPDATE notifications SET is_read = TRUE WHERE id = %s AND user_id = %s",
-        (notification_id, current_user.id)
+        (notification_id, current_user["id"])
     )
     return {"message": "تم تحديث الإشعار"}
 
 @api_router.put("/notifications/mark-all-read")
-async def mark_all_read(current_user: User = Depends(get_current_user)):
+async def mark_all_read(current_user: dict = Depends(get_current_user)):
     await execute_query(
         "UPDATE notifications SET is_read = TRUE WHERE user_id = %s",
-        (current_user.id,)
+        (current_user["id"],)
     )
     return {"message": "تم تحديث جميع الإشعارات"}
 
@@ -644,36 +648,36 @@ async def mark_all_read(current_user: User = Depends(get_current_user)):
 # APIs البريد الإلكتروني الداخلي
 # =====================================================
 @api_router.get("/emails/inbox")
-async def get_inbox(current_user: User = Depends(get_current_user)):
+async def get_inbox(current_user: dict = Depends(get_current_user)):
     emails = await execute_query(
         """SELECT e.*, er.is_read, er.id as recipient_record_id
            FROM emails e
            JOIN email_recipients er ON e.id = er.email_id
            WHERE er.recipient_id = %s AND er.is_deleted = FALSE AND e.is_sent = TRUE
            ORDER BY e.sent_at DESC""",
-        (current_user.id,),
+        (current_user["id"],),
         fetch_all=True
     )
     return emails or []
 
 @api_router.get("/emails/sent")
-async def get_sent(current_user: User = Depends(get_current_user)):
+async def get_sent(current_user: dict = Depends(get_current_user)):
     emails = await execute_query(
         "SELECT * FROM emails WHERE sender_id = %s AND is_sent = TRUE ORDER BY sent_at DESC",
-        (current_user.id,),
+        (current_user["id"],),
         fetch_all=True
     )
     return emails or []
 
 @api_router.post("/emails/send")
-async def send_email(email: EmailCreate, current_user: User = Depends(get_current_user)):
+async def send_email(email: EmailCreate, current_user: dict = Depends(get_current_user)):
     email_id = generate_id()
     
     await execute_query(
         """INSERT INTO emails (id, sender_id, sender_name, sender_email, subject, body, 
            is_draft, is_sent, sent_at, created_at)
            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())""",
-        (email_id, current_user.id, current_user.full_name, current_user.email,
+        (email_id, current_user["id"], current_user["full_name"], current_user["email"],
          email.subject, email.body, email.save_as_draft, not email.save_as_draft)
     )
     
@@ -692,16 +696,16 @@ async def send_email(email: EmailCreate, current_user: User = Depends(get_curren
             await execute_query(
                 """INSERT INTO notifications (id, user_id, title, message, notification_type, link, created_at)
                    VALUES (%s, %s, %s, %s, 'email', '/email', NOW())""",
-                (notif_id, recipient.get("id"), "بريد جديد", f"رسالة من {current_user.full_name}: {email.subject}")
+                (notif_id, recipient.get("id"), "بريد جديد", f"رسالة من {current_user["full_name"]}: {email.subject}")
             )
     
     return {"message": "تم إرسال البريد بنجاح", "email_id": email_id}
 
 @api_router.put("/emails/{email_id}/read")
-async def mark_email_read(email_id: str, current_user: User = Depends(get_current_user)):
+async def mark_email_read(email_id: str, current_user: dict = Depends(get_current_user)):
     await execute_query(
         "UPDATE email_recipients SET is_read = TRUE, read_at = NOW() WHERE email_id = %s AND recipient_id = %s",
-        (email_id, current_user.id)
+        (email_id, current_user["id"])
     )
     return {"message": "تم تحديث البريد"}
 
@@ -843,17 +847,17 @@ async def get_leaderboard():
     return {"leaderboard": leaderboard}
 
 @api_router.get("/virtual-court/my-profile")
-async def get_game_profile(current_user: User = Depends(get_current_user)):
+async def get_game_profile(current_user: dict = Depends(get_current_user)):
     profile = await execute_query(
         "SELECT * FROM game_profiles WHERE user_id = %s",
-        (current_user.id,),
+        (current_user["id"],),
         fetch_one=True
     )
     
     if not profile:
         return {
-            "user_id": current_user.id,
-            "user_name": current_user.full_name,
+            "user_id": current_user["id"],
+            "user_name": current_user["full_name"],
             "total_xp": 0,
             "level": 1,
             "rank": "مبتدئ",
@@ -867,8 +871,8 @@ async def get_game_profile(current_user: User = Depends(get_current_user)):
 # APIs الإحصائيات
 # =====================================================
 @api_router.get("/stats/dashboard")
-async def get_dashboard_stats(current_user: User = Depends(get_current_user)):
-    if current_user.role != "admin":
+async def get_dashboard_stats(current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "admin":
         raise HTTPException(status_code=403, detail="غير مصرح")
     
     total_users = await execute_query("SELECT COUNT(*) as count FROM users", fetch_one=True)
