@@ -51,7 +51,7 @@ MYSQL_HOST = os.environ.get("MYSQL_HOST", "localhost")
 MYSQL_PORT = int(os.environ.get("MYSQL_PORT", 3306))
 MYSQL_USER = os.environ.get("MYSQL_USER", "root")
 MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "")
-MYSQL_DB = os.environ.get("MYSQL_DB", "legal_suite")
+MYSQL_DB = os.environ.get("MYSQL_DATABASE", "legal_suite")
 
 pool = None
 
@@ -920,3 +920,271 @@ async def shutdown():
     if pool:
         pool.close()
         await pool.wait_closed()
+
+# =====================================================
+# وظائف البريد الخارجي (IMAP/SMTP)
+# =====================================================
+import imaplib
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
+from email.header import decode_header, Header
+from email.utils import formataddr, parsedate_to_datetime
+import email as email_lib
+import base64
+import logging
+import asyncio
+
+IMAP_SERVER = os.environ.get('IMAP_SERVER', 'mail.hklaw.sa')
+IMAP_PORT = int(os.environ.get('IMAP_PORT', 993))
+SMTP_SERVER = os.environ.get('SMTP_SERVER', 'mail.hklaw.sa')
+SMTP_PORT = int(os.environ.get('SMTP_PORT', 465))
+EMAIL_ADDRESS = os.environ.get('EMAIL_ADDRESS', '')
+EMAIL_PASSWORD = os.environ.get('EMAIL_PASSWORD', '')
+
+def decode_email_header(header):
+    if not header:
+        return ""
+    decoded_parts = []
+    for part, charset in decode_header(header):
+        if isinstance(part, bytes):
+            try:
+                decoded_parts.append(part.decode(charset or 'utf-8', errors='replace'))
+            except:
+                decoded_parts.append(part.decode('utf-8', errors='replace'))
+        else:
+            decoded_parts.append(part)
+    return ''.join(decoded_parts)
+
+def get_email_body(msg):
+    body = ""
+    if msg.is_multipart():
+        for part in msg.walk():
+            content_type = part.get_content_type()
+            content_disposition = str(part.get("Content-Disposition"))
+            if content_type == "text/plain" and "attachment" not in content_disposition:
+                try:
+                    payload = part.get_payload(decode=True)
+                    charset = part.get_content_charset() or 'utf-8'
+                    body = payload.decode(charset, errors='replace')
+                    break
+                except:
+                    pass
+            elif content_type == "text/html" and "attachment" not in content_disposition and not body:
+                try:
+                    payload = part.get_payload(decode=True)
+                    charset = part.get_content_charset() or 'utf-8'
+                    body = payload.decode(charset, errors='replace')
+                except:
+                    pass
+    else:
+        try:
+            payload = msg.get_payload(decode=True)
+            charset = msg.get_content_charset() or 'utf-8'
+            body = payload.decode(charset, errors='replace')
+        except:
+            body = str(msg.get_payload())
+    return body
+
+def get_email_attachments(msg):
+    attachments = []
+    if msg.is_multipart():
+        for part in msg.walk():
+            content_disposition = str(part.get("Content-Disposition"))
+            if "attachment" in content_disposition:
+                filename = part.get_filename()
+                if filename:
+                    filename = decode_email_header(filename)
+                    payload = part.get_payload(decode=True)
+                    if payload:
+                        attachments.append({
+                            "name": filename,
+                            "type": part.get_content_type(),
+                            "size": len(payload),
+                            "data": base64.b64encode(payload).decode('utf-8')
+                        })
+    return attachments
+
+def sync_fetch_external_emails():
+    if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
+        return []
+    emails_data = []
+    try:
+        mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
+        mail.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+        mail.select('INBOX')
+        status, messages = mail.search(None, 'ALL')
+        if status == 'OK':
+            email_ids = messages[0].split()
+            recent_ids = email_ids[-50:] if len(email_ids) > 50 else email_ids
+            for email_id in reversed(recent_ids):
+                try:
+                    status, msg_data = mail.fetch(email_id, '(RFC822)')
+                    if status == 'OK':
+                        raw_email = msg_data[0][1]
+                        msg = email_lib.message_from_bytes(raw_email)
+                        subject = decode_email_header(msg.get('Subject', ''))
+                        from_header = decode_email_header(msg.get('From', ''))
+                        to_header = decode_email_header(msg.get('To', ''))
+                        date_header = msg.get('Date', '')
+                        message_id = msg.get('Message-ID', str(uuid.uuid4()))
+                        try:
+                            sent_date = parsedate_to_datetime(date_header)
+                        except:
+                            sent_date = datetime.now(timezone.utc)
+                        sender_name = from_header
+                        sender_email = from_header
+                        if '<' in from_header:
+                            parts = from_header.split('<')
+                            sender_name = parts[0].strip().strip('"')
+                            sender_email = parts[1].strip('>')
+                        body = get_email_body(msg)
+                        attachments = get_email_attachments(msg)
+                        emails_data.append({
+                            "message_id": message_id,
+                            "subject": subject or "(بدون موضوع)",
+                            "sender_name": sender_name,
+                            "sender_email": sender_email,
+                            "to": to_header,
+                            "body": body,
+                            "attachments": attachments,
+                            "sent_at": sent_date.isoformat(),
+                            "imap_id": email_id.decode() if isinstance(email_id, bytes) else str(email_id)
+                        })
+                except Exception as e:
+                    logging.error(f"Error processing email {email_id}: {e}")
+                    continue
+        mail.logout()
+    except Exception as e:
+        logging.error(f"IMAP connection error: {e}")
+    return emails_data
+
+def sync_send_external_email(to_email: str, subject: str, body: str, attachments: list = None):
+    if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
+        raise Exception("بيانات SMTP غير مكتملة")
+    try:
+        msg = MIMEMultipart('alternative')
+        msg['From'] = formataddr((str(Header('HK Law Firm', 'utf-8')), EMAIL_ADDRESS))
+        msg['To'] = to_email
+        msg['Subject'] = subject
+        msg['Reply-To'] = EMAIL_ADDRESS
+        msg['Message-ID'] = f"<{uuid.uuid4()}@hklaw.sa>"
+        msg['Date'] = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
+        msg['X-Mailer'] = "Legal Suite - HK Law Firm"
+        msg['MIME-Version'] = "1.0"
+        msg.attach(MIMEText(body, 'plain', 'utf-8'))
+        html_body = f"""
+        <html dir="rtl">
+        <head><meta charset="utf-8"></head>
+        <body style="font-family: Arial, sans-serif; direction: rtl;">
+            <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+                <div style="white-space: pre-wrap;">{body}</div>
+                <hr style="margin-top: 30px; border: none; border-top: 1px solid #ddd;">
+                <p style="color: #666; font-size: 12px;">مكتب المحامي هشام يوسف الخياط<br>البريد: info@hklaw.sa</p>
+            </div>
+        </body>
+        </html>
+        """
+        msg.attach(MIMEText(html_body, 'html', 'utf-8'))
+        if attachments:
+            for att in attachments:
+                if att.get('data'):
+                    part = MIMEBase('application', 'octet-stream')
+                    part.set_payload(base64.b64decode(att['data']))
+                    encoders.encode_base64(part)
+                    part.add_header('Content-Disposition', f'attachment; filename="{att.get("name", "attachment")}"')
+                    msg.attach(part)
+        server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT)
+        server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+        server.sendmail(EMAIL_ADDRESS, to_email, msg.as_string())
+        server.quit()
+        return True
+    except Exception as e:
+        logging.error(f"SMTP send error: {e}")
+        raise e
+
+class ExternalEmailInput(BaseModel):
+    to_email: str
+    subject: str
+    body: str
+    attachments: Optional[List[dict]] = []
+
+@api_router.get("/emails/external/sync")
+async def sync_external_emails(current_user: dict = Depends(get_current_user)):
+    if current_user["role"] == "client":
+        raise HTTPException(status_code=403, detail="غير مصرح")
+    loop = asyncio.get_event_loop()
+    external_emails = await loop.run_in_executor(None, sync_fetch_external_emails)
+    synced_count = 0
+    for ext_email in external_emails:
+        existing = await execute_query(
+            "SELECT id FROM emails WHERE external_message_id = %s",
+            (ext_email["message_id"],), fetch_one=True
+        )
+        if existing:
+            continue
+        email_id = str(uuid.uuid4())
+        await execute_query("""
+            INSERT INTO emails (id, sender_id, sender_name, sender_email, subject, body, 
+                              is_external, external_email, external_message_id, status, sent_at, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (email_id, None, ext_email["sender_name"], ext_email["sender_email"],
+              ext_email["subject"], ext_email["body"], True, ext_email["sender_email"],
+              ext_email["message_id"], "received", ext_email["sent_at"], 
+              datetime.now(timezone.utc).isoformat()))
+        staff = await execute_query(
+            "SELECT id, email FROM users WHERE role IN ('admin', 'lawyer')",
+            fetch_all=True
+        )
+        for user in staff:
+            recipient_id = str(uuid.uuid4())
+            await execute_query("""
+                INSERT INTO email_recipients (id, email_id, user_id, user_email, recipient_type, is_read, folder)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (recipient_id, email_id, user["id"], user["email"], "to", False, "inbox"))
+        synced_count += 1
+    return {"message": f"تم مزامنة {synced_count} رسالة جديدة", "synced_count": synced_count}
+
+@api_router.post("/emails/external/send")
+async def send_external_email(email_input: ExternalEmailInput, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] == "client":
+        raise HTTPException(status_code=403, detail="غير مصرح")
+    try:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, sync_send_external_email, 
+                                   email_input.to_email, email_input.subject, 
+                                   email_input.body, email_input.attachments)
+        email_id = str(uuid.uuid4())
+        await execute_query("""
+            INSERT INTO emails (id, sender_id, sender_name, sender_email, subject, body,
+                              is_external, external_email, status, sent_at, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (email_id, current_user["id"], current_user["full_name"], EMAIL_ADDRESS,
+              email_input.subject, email_input.body, True, email_input.to_email,
+              "sent", datetime.now(timezone.utc).isoformat(), datetime.now(timezone.utc).isoformat()))
+        return {"message": "تم إرسال البريد بنجاح", "email_id": email_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"فشل إرسال البريد: {str(e)}")
+
+@api_router.get("/emails/external/test")
+async def test_email_connection(current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="للمدير فقط")
+    results = {"imap": False, "smtp": False, "errors": []}
+    try:
+        mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
+        mail.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+        mail.logout()
+        results["imap"] = True
+    except Exception as e:
+        results["errors"].append(f"IMAP: {str(e)}")
+    try:
+        server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT)
+        server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+        server.quit()
+        results["smtp"] = True
+    except Exception as e:
+        results["errors"].append(f"SMTP: {str(e)}")
+    return results
