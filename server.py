@@ -696,7 +696,7 @@ async def send_email(email: EmailCreate, current_user: dict = Depends(get_curren
             await execute_query(
                 """INSERT INTO notifications (id, user_id, title, message, notification_type, link, created_at)
                    VALUES (%s, %s, %s, %s, 'email', '/email', NOW())""",
-                (notif_id, recipient.get("id"), "بريد جديد", f"رسالة من {current_user["full_name"]}: {email.subject}")
+                (notif_id, recipient.get("id"), "بريد جديد", f"رسالة من {current_user.get('full_name')}: {email.subject}")
             )
     
     return {"message": "تم إرسال البريد بنجاح", "email_id": email_id}
