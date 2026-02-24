@@ -1,0 +1,9 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "legal-suite-backend"
+version = "1.0.0"
+description = "Legal Suite - Law Firm Management System Backend"
+requires-python = ">=3.9"
