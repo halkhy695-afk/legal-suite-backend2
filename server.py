@@ -6759,16 +6759,16 @@ async def create_admin_user():
     admin_exists = await db.users.find_one({"role": UserRole.ADMIN}, {"_id": 0})
     if not admin_exists:
         hashed_password = get_password_hash("الخياط")
+        now_str = datetime.now(timezone.utc).isoformat()
         admin_user = UserInDB(
             id=str(uuid.uuid4()),
             email="admin@alkhayat.com",
             full_name="هشام",
             role=UserRole.ADMIN,
-            created_at=datetime.now(timezone.utc),
+            created_at=now_str,
             hashed_password=hashed_password
         )
         doc = admin_user.model_dump()
-        doc['created_at'] = doc['created_at'].isoformat()
         await db.users.insert_one(doc)
         logger.info("Admin user created successfully")
 
