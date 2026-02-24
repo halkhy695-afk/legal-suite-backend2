@@ -6572,8 +6572,20 @@ def sync_send_external_email(to_email: str, subject: str, body: str, attachments
                     part.add_header('Content-Disposition', f'attachment; filename="{att.get("name", "attachment")}"')
                     msg.attach(part)
         
-        # الاتصال وإرسال
-        server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT)
+        # الاتصال وإرسال - محاولة TLS أولاً ثم SSL
+        if SMTP_PORT == 587:
+            # منفذ 587 يستخدم STARTTLS
+            server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=30)
+            server.starttls()
+        else:
+            # محاولة SSL أولاً، ثم TLS إذا فشل
+            try:
+                server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=30)
+            except Exception as ssl_error:
+                logging.warning(f"SSL failed, trying TLS on port 587: {ssl_error}")
+                server = smtplib.SMTP(SMTP_SERVER, 587, timeout=30)
+                server.starttls()
+        
         server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
         server.sendmail(EMAIL_ADDRESS, to_email, msg.as_string())
         server.quit()
@@ -6737,7 +6749,15 @@ async def test_email_connection(current_user: User = Depends(get_current_user)):
     
     # اختبار SMTP
     try:
-        server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT)
+        if SMTP_PORT == 587:
+            server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=15)
+            server.starttls()
+        else:
+            try:
+                server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=15)
+            except:
+                server = smtplib.SMTP(SMTP_SERVER, 587, timeout=15)
+                server.starttls()
         server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
         server.quit()
         results["smtp"] = True
