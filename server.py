@@ -7,9 +7,10 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 import base64
+import certifi
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
-from typing import List, Optional
+from typing import List, Optional, Union
 import uuid
 from datetime import datetime, timezone, timedelta
 from passlib.context import CryptContext
@@ -31,9 +32,22 @@ import asyncio
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+# اتصال MongoDB مع دعم SSL لـ MongoDB Atlas
+mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
+db_name = os.environ.get('DB_NAME', 'legal_suite')
+
+# إضافة إعدادات SSL لـ MongoDB Atlas
+if 'mongodb+srv' in mongo_url or 'mongodb.net' in mongo_url:
+    client = AsyncIOMotorClient(
+        mongo_url,
+        tlsCAFile=certifi.where(),
+        serverSelectionTimeoutMS=30000,
+        connectTimeoutMS=30000
+    )
+else:
+    client = AsyncIOMotorClient(mongo_url)
+
+db = client[db_name]
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -109,6 +123,19 @@ class UserRole:
     MARKETER = "marketer"
     CLIENT = "client"
 
+# دالة مساعدة لتحويل التاريخ
+def parse_datetime(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace('Z', '+00:00'))
+        except:
+            return datetime.now(timezone.utc)
+    return datetime.now(timezone.utc)
+
 class User(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -119,7 +146,7 @@ class User(BaseModel):
     role: str
     department: Optional[str] = None
     first_login: bool = True
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: Union[datetime, str] = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class UserCreate(BaseModel):
     email: EmailStr
