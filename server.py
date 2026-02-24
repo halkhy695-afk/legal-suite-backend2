@@ -83,6 +83,21 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
+# دالة مساعدة لتحويل datetime إلى string
+def convert_datetime_fields(data: dict) -> dict:
+    """تحويل جميع حقول datetime إلى ISO string"""
+    if data is None:
+        return data
+    result = dict(data)
+    for key, value in result.items():
+        if isinstance(value, datetime):
+            result[key] = value.isoformat()
+        elif isinstance(value, dict):
+            result[key] = convert_datetime_fields(value)
+        elif isinstance(value, list):
+            result[key] = [convert_datetime_fields(item) if isinstance(item, dict) else item for item in value]
+    return result
+
 async def get_current_user(token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -100,6 +115,9 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     user = await db.users.find_one({"id": user_id}, {"_id": 0})
     if user is None:
         raise credentials_exception
+    
+    # تحويل datetime إلى string
+    user = convert_datetime_fields(user)
     return User(**user)
 
 async def log_action(action_type: str, entity_type: str, entity_id: str, user_id: str, user_name: str, description: str):
@@ -146,7 +164,7 @@ class User(BaseModel):
     role: str
     department: Optional[str] = None
     first_login: bool = True
-    created_at: Union[datetime, str] = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: Optional[str] = None  # سيتم تحويله من datetime إلى string
 
 class UserCreate(BaseModel):
     email: EmailStr
@@ -1061,11 +1079,11 @@ async def register(user_input: UserCreate):
     
     hashed_password = get_password_hash(user_input.password)
     user_dict = user_input.model_dump(exclude={"password"})
+    user_dict['created_at'] = datetime.now(timezone.utc).isoformat()  # إضافة التاريخ كـ string
     user_obj = User(**user_dict)
     user_in_db = UserInDB(**user_obj.model_dump(), hashed_password=hashed_password)
     
     doc = user_in_db.model_dump()
-    doc['created_at'] = doc['created_at'].isoformat()
     await db.users.insert_one(doc)
     
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -1085,11 +1103,11 @@ async def admin_create_user(user_input: UserCreate, current_user: User = Depends
     
     hashed_password = get_password_hash(user_input.password)
     user_dict = user_input.model_dump(exclude={"password"})
+    user_dict['created_at'] = datetime.now(timezone.utc).isoformat()  # إضافة التاريخ كـ string
     user_obj = User(**user_dict)
     user_in_db = UserInDB(**user_obj.model_dump(), hashed_password=hashed_password)
     
     doc = user_in_db.model_dump()
-    doc['created_at'] = doc['created_at'].isoformat()
     await db.users.insert_one(doc)
     
     return user_obj
@@ -1122,8 +1140,8 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     if not verify_password(form_data.password, user["hashed_password"]):
         raise HTTPException(status_code=400, detail="Incorrect email or password")
     
-    if isinstance(user['created_at'], str):
-        user['created_at'] = datetime.fromisoformat(user['created_at'])
+    # تحويل datetime إلى string
+    user = convert_datetime_fields(user)
     
     user_obj = User(**{k: v for k, v in user.items() if k != 'hashed_password'})
     
