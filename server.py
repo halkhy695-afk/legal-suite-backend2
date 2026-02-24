@@ -36,13 +36,20 @@ load_dotenv(ROOT_DIR / '.env')
 mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
 db_name = os.environ.get('DB_NAME', 'legal_suite')
 
-# إضافة إعدادات SSL لـ MongoDB Atlas
+# إضافة إعدادات SSL للـ Connection String إذا كان MongoDB Atlas
 if 'mongodb+srv' in mongo_url or 'mongodb.net' in mongo_url:
+    # إضافة معاملات TLS إلى الـ URL
+    if '?' in mongo_url:
+        if 'tls=' not in mongo_url.lower():
+            mongo_url = mongo_url + '&tls=true&tlsAllowInvalidCertificates=true'
+    else:
+        mongo_url = mongo_url + '?tls=true&tlsAllowInvalidCertificates=true'
+    
     client = AsyncIOMotorClient(
         mongo_url,
-        tlsCAFile=certifi.where(),
         serverSelectionTimeoutMS=30000,
-        connectTimeoutMS=30000
+        connectTimeoutMS=30000,
+        socketTimeoutMS=30000
     )
 else:
     client = AsyncIOMotorClient(mongo_url)
