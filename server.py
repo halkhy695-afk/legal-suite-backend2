@@ -32,6 +32,13 @@ import asyncio
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
+# إعداد الـ Logger مبكراً
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 # اتصال MongoDB مع دعم SSL لـ MongoDB Atlas
 mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
 db_name = os.environ.get('DB_NAME', 'legal_suite')
@@ -171,7 +178,14 @@ class User(BaseModel):
     role: str
     department: Optional[str] = None
     first_login: bool = True
-    created_at: Optional[str] = None  # سيتم تحويله من datetime إلى string
+    created_at: Optional[Union[datetime, str]] = None  # يقبل datetime أو string
+    
+    @property
+    def created_at_str(self) -> Optional[str]:
+        """إرجاع created_at كـ string"""
+        if isinstance(self.created_at, datetime):
+            return self.created_at.isoformat()
+        return self.created_at
 
 class UserCreate(BaseModel):
     email: EmailStr
@@ -6779,12 +6793,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
